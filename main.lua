@@ -7,6 +7,7 @@ local RunService = game:GetService("RunService")
 local Mouse = LocalPlayer:GetMouse()
 local UserInputService = game:GetService("UserInputService")
 local Drawing = Drawing or require("Drawing")
+local UserInputService = game:GetService("UserInputService")
 
 -- Default Settings
 local AimbotEnabled = true
@@ -41,6 +42,11 @@ FOVCircle.Color = FOVColor
 FOVCircle.Filled = false
 FOVCircle.Visible = VisibleFOV
 
+
+local function MoveMouse(deltaX, deltaY)
+    -- Simulate mouse movement using UserInputService
+    mousemoverel(deltaX, deltaY)
+end
 
 local function IsOnSameTeam(targetPlayer)
     if not TeamCheck then
@@ -141,9 +147,8 @@ end
 
 -- FUNCTION: Aimbot (Locks Aim to Target)
 local function AimAtTarget()
-    -- Check if the aimbot should run
     if not AimbotEnabled then return end
-    if not AlwaysOn and not M2Pressed then return end -- Only run if "Always On" is enabled or M2 is pressed
+    if not AlwaysOn and not M2Pressed then return end
 
     local target = GetClosestPlayer()
     if target and target.Character then
@@ -162,10 +167,18 @@ local function AimAtTarget()
             end
 
             if targetPos then
-                local direction = (targetPos - Camera.CFrame.Position).unit
-                local newCFrame = CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + direction)
+                -- Calculate the target position on the screen
+                local targetPos2D = Camera:WorldToViewportPoint(targetPos)
+                local mousePos = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
 
-                Camera.CFrame = Camera.CFrame:Lerp(newCFrame, AimSmoothness)
+                -- Convert Vector3 to Vector2 (discard Z component)
+                local targetPos2D_Vector2 = Vector2.new(targetPos2D.X, targetPos2D.Y)
+
+                -- Calculate the delta
+                local delta = (targetPos2D_Vector2 - mousePos) * AimSmoothness
+
+                -- Move the mouse towards the target
+                MoveMouse(delta.X, delta.Y)
             end
         end
     end
@@ -347,7 +360,7 @@ Tab:CreateSlider({
 
 Tab:CreateSlider({
     Name = "Bullet Prediction Speed",  -- Higher values = slower speed
-    Range = {500, 10000},
+    Range = {50, 10000},
     Increment = 50,
     Suffix = "units/s",
     CurrentValue = BulletSpeed,
