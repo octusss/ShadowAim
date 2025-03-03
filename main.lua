@@ -21,6 +21,7 @@ local BulletSpeed = 10000 -- Adjust based on game mechanics
 local TeamCheck = true
 local PredictionEnabled = false
 local M2Pressed = false
+local AliveCheckEnabled = true
 
 local AlwaysOn = false
 
@@ -30,6 +31,8 @@ local ShowNames = true
 local ShowHealth = true
 local ShowBoxes = true
 local ESPColor = Color3.fromRGB(255, 0, 0)
+local ESPVisibleColor = Color3.fromRGB(0, 0, 255) -- Default color for visible enemies (blue)
+local ESPVisibleToggle = true -- Enable/disable visible ESP color
 
 local ESPObjects = {}
 
@@ -56,10 +59,41 @@ TriggerbotFOVCircle.Radius = TriggerbotFOV
 TriggerbotFOVCircle.Color = TriggerbotFOVColor
 TriggerbotFOVCircle.Filled = false
 TriggerbotFOVCircle.Visible = TriggerbotFOVVisible
-local function MoveMouse(deltaX, deltaY)
-    -- Simulate mouse movement using UserInputService
-    mousemoverel(deltaX, deltaY)
+
+
+local function AimWithUserInputService(targetPos2D, mousePos)
+    local delta = (targetPos2D - mousePos) * AimSmoothness
+    mousemoverel(delta.X, delta.Y)
 end
+
+local function AimWithCFrame(targetPos)
+    local direction = (targetPos - Camera.CFrame.Position).Unit
+    Camera.CFrame = CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + direction)
+end
+
+local AimingMethods = {
+    "UserInputService",
+    "CFrame"
+}
+
+local SelectedAimingMethod = "UserInputService" -- Default method
+
+
+-- FUNCTION: Check if Player is Alive
+local function IsAlive(player)
+    if not AliveCheckEnabled then
+        return true -- Skip alive check if the feature is disabled
+    end
+
+    local character = player.Character
+    if not character then return false end
+
+    local humanoid = character:FindFirstChild("Humanoid")
+    if not humanoid then return false end
+
+    return humanoid.Health > 0
+end
+
 
 local function IsOnSameTeam(targetPlayer)
     if not TeamCheck then
@@ -121,11 +155,19 @@ local function GetClosestPlayer()
     local shortestDistance = AimFOV
 
     for _, player in pairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character then
+        if player ~= LocalPlayer and player.Character and IsAlive(player) then
             if TeamCheck and IsOnSameTeam(player) then
                 -- Skip teammates if TeamCheck is enabled
             else
-                local targetPart = player.Character:FindFirstChild(HeadshotOnly and "Head" or "HumanoidRootPart")
+                local targetPart
+                if HeadshotOnly then
+                    -- Only target the head if HeadshotOnly is enabled
+                    targetPart = player.Character:FindFirstChild("Head")
+                else
+                    -- Default to HumanoidRootPart if HeadshotOnly is disabled
+                    targetPart = player.Character:FindFirstChild("HumanoidRootPart")
+                end
+
                 if targetPart then
                     local targetPos, onScreen
                     if PredictionEnabled then
@@ -152,7 +194,6 @@ local function GetClosestPlayer()
     return closestPlayer
 end
 
-
 -- FUNCTION: Aimbot (Locks Aim to Target)
 local function AimAtTarget()
     if not AimbotEnabled then return end
@@ -164,29 +205,23 @@ local function AimAtTarget()
         if targetPart then
             local targetPos
             if PredictionEnabled then
-                -- Use prediction if enabled
                 local predictedPos = PredictPosition(target)
                 if predictedPos then
                     targetPos = predictedPos
                 end
             else
-                -- Use current position if prediction is disabled
                 targetPos = targetPart.Position
             end
 
             if targetPos then
-                -- Calculate the target position on the screen
                 local targetPos2D = Camera:WorldToViewportPoint(targetPos)
                 local mousePos = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
 
-                -- Convert Vector3 to Vector2 (discard Z component)
-                local targetPos2D_Vector2 = Vector2.new(targetPos2D.X, targetPos2D.Y)
-
-                -- Calculate the delta
-                local delta = (targetPos2D_Vector2 - mousePos) * AimSmoothness
-
-                -- Move the mouse towards the target
-                MoveMouse(delta.X, delta.Y)
+                if SelectedAimingMethod == "UserInputService" then
+                    AimWithUserInputService(Vector2.new(targetPos2D.X, targetPos2D.Y), mousePos)
+                elseif SelectedAimingMethod == "CFrame" then
+                    AimWithCFrame(targetPos)
+                end
             end
         end
     end
@@ -288,6 +323,14 @@ local function UpdateESP(player)
         return
     end
 
+    -- Skip dead players if AliveCheck is enabled
+    if AliveCheckEnabled and not IsAlive(player) then
+        espData.Box.Visible = false
+        espData.NameLabel.Visible = false
+        espData.HealthBar.Visible = false
+        return
+    end
+
     local character = player.Character
     if not character then
         espData.Box.Visible = false
@@ -314,15 +357,26 @@ local function UpdateESP(player)
         return
     end
 
+    -- Check if the player is visible
+    local isVisible = IsVisible(rootPart)
+
+    -- Set ESP color based on visibility
+    local espColor = ESPColor
+    if ESPVisibleToggle and isVisible then
+        espColor = ESPVisibleColor
+    end
+
     -- Update ESP box
     local size = Vector2.new(2000 / rootPos.Z, 3000 / rootPos.Z) -- Adjust box size based on distance
     espData.Box.Size = size
     espData.Box.Position = Vector2.new(rootPos.X - size.X / 2, rootPos.Y - size.Y / 2)
+    espData.Box.Color = espColor
     espData.Box.Visible = ESPEnabled and ShowBoxes
 
     -- Update name label
     espData.NameLabel.Text = player.Name
     espData.NameLabel.Position = Vector2.new(rootPos.X, rootPos.Y - size.Y / 2 - 20)
+    espData.NameLabel.Color = espColor
     espData.NameLabel.Visible = ESPEnabled and ShowNames
 
     -- Update health bar
@@ -330,6 +384,7 @@ local function UpdateESP(player)
     local healthBarLength = size.X * healthPercent
     espData.HealthBar.From = Vector2.new(rootPos.X - size.X / 2, rootPos.Y + size.Y / 2 + 5)
     espData.HealthBar.To = Vector2.new(rootPos.X - size.X / 2 + healthBarLength, rootPos.Y + size.Y / 2 + 5)
+    espData.HealthBar.Color = espColor
     espData.HealthBar.Visible = ESPEnabled and ShowHealth
 end
 
@@ -376,6 +431,22 @@ Tab:CreateToggle({
     Flag = "AimbotToggle",
     Callback = function(Value)
         AimbotEnabled = Value
+    end
+})
+
+Tab:CreateDropdown({
+    Name = "Aiming Method",
+    Options = AimingMethods,
+    CurrentOption = SelectedAimingMethod,
+    Flag = "AimingMethodDropdown",
+    Callback = function(Option)
+        -- Ensure Option is a string
+        if type(Option) == "table" then
+            SelectedAimingMethod = Option.Text or Option[1] -- Extract the string from the table
+        else
+            SelectedAimingMethod = Option -- Use the string directly
+        end
+        print("Selected Aiming Method:", SelectedAimingMethod) -- Debug print
     end
 })
 
@@ -471,6 +542,17 @@ Tab:CreateToggle({
     end
 })
 
+
+-- Add Alive Check Toggle to Rayfield GUI
+Tab:CreateToggle({
+    Name = "Alive Check",
+    CurrentValue = AliveCheckEnabled,
+    Flag = "AliveCheckToggle",
+    Callback = function(Value)
+        AliveCheckEnabled = Value
+    end
+})
+
 Tab:CreateToggle({
     Name = "Headshot Only",
     CurrentValue = HeadshotOnly,
@@ -540,6 +622,7 @@ ESPTab:CreateToggle({
     end
 })
 
+
 ESPTab:CreateToggle({
     Name = "Show Names",
     CurrentValue = ShowNames,
@@ -576,12 +659,32 @@ ESPTab:CreateColorPicker({
     end
 })
 
+-- Add Visible ESP Color Picker
+ESPTab:CreateColorPicker({
+    Name = "Visible ESP Color",
+    Color = ESPVisibleColor,
+    Flag = "ESPVisibleColorPicker",
+    Callback = function(Color)
+        ESPVisibleColor = Color
+    end
+})
+
 ESPTab:CreateToggle({
     Name = "Team Check",
     CurrentValue = TeamCheck,
     Flag = "TeamCheckToggle",
     Callback = function(Value)
         TeamCheck = Value
+    end
+})
+
+-- Add Visible ESP Color Toggle
+ESPTab:CreateToggle({
+    Name = "Enable Visible ESP Color",
+    CurrentValue = ESPVisibleToggle,
+    Flag = "ESPVisibleToggle",
+    Callback = function(Value)
+        ESPVisibleToggle = Value
     end
 })
 
@@ -609,7 +712,6 @@ end)
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if input.UserInputType == Enum.UserInputType.MouseButton2 then
         M2Pressed = true
-        print("true")
     end
 end)
 
@@ -617,6 +719,5 @@ end)
 UserInputService.InputEnded:Connect(function(input, gameProcessed)
     if input.UserInputType == Enum.UserInputType.MouseButton2 then
         M2Pressed = false
-        print("false")
     end
 end)
