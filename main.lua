@@ -42,7 +42,20 @@ FOVCircle.Color = FOVColor
 FOVCircle.Filled = false
 FOVCircle.Visible = VisibleFOV
 
+-- Default Triggerbot Settings
+local TriggerbotEnabled = false
+local TriggerbotFOV = 50 -- FOV size for the Triggerbot
+local TriggerbotFOVVisible = false -- Whether the FOV circle is visible
+local TriggerbotFOVColor = Color3.fromRGB(0, 255, 0) -- Color of the FOV circle
 
+-- Triggerbot FOV Circle
+local TriggerbotFOVCircle = Drawing.new("Circle")
+TriggerbotFOVCircle.Thickness = 2
+TriggerbotFOVCircle.NumSides = 100
+TriggerbotFOVCircle.Radius = TriggerbotFOV
+TriggerbotFOVCircle.Color = TriggerbotFOVColor
+TriggerbotFOVCircle.Filled = false
+TriggerbotFOVCircle.Visible = TriggerbotFOVVisible
 local function MoveMouse(deltaX, deltaY)
     -- Simulate mouse movement using UserInputService
     mousemoverel(deltaX, deltaY)
@@ -53,7 +66,6 @@ local function IsOnSameTeam(targetPlayer)
         return false -- Skip team check if the feature is disabled
     end
 
-    -- Ensure LocalPlayer and targetPlayer are valid and have teams
     if not LocalPlayer or not targetPlayer then
         return false
     end
@@ -61,7 +73,6 @@ local function IsOnSameTeam(targetPlayer)
     local localPlayerTeam = LocalPlayer.Team
     local targetPlayerTeam = targetPlayer.Team
 
-    -- Ensure teams are valid before comparing
     if not localPlayerTeam or not targetPlayerTeam then
         return false
     end
@@ -91,7 +102,7 @@ end
 -- FUNCTION: Predict Target Position
 local function PredictPosition(target)
     if not PredictionEnabled then
-        return nil -- Skip prediction if disabled
+        return nil
     end
 
     local targetRoot = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
@@ -111,25 +122,22 @@ local function GetClosestPlayer()
 
     for _, player in pairs(Players:GetPlayers()) do
         if player ~= LocalPlayer and player.Character then
-            -- Skip teammates if TeamCheck is enabled
             if TeamCheck and IsOnSameTeam(player) then
-                -- Skip this iteration
+                -- Skip teammates if TeamCheck is enabled
             else
                 local targetPart = player.Character:FindFirstChild(HeadshotOnly and "Head" or "HumanoidRootPart")
                 if targetPart then
-                    local targetPos
+                    local targetPos, onScreen
                     if PredictionEnabled then
-                        -- Use prediction if enabled
                         local predictedPos = PredictPosition(player)
                         if predictedPos then
                             targetPos, onScreen = Camera:WorldToViewportPoint(predictedPos)
                         end
                     else
-                        -- Use current position if prediction is disabled
                         targetPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
                     end
 
-                    if onScreen then
+                    if onScreen and targetPos then
                         local distance = (Vector2.new(targetPos.X, targetPos.Y) - Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)).magnitude
                         if distance < shortestDistance and IsVisible(targetPart) then
                             closestPlayer = player
@@ -184,6 +192,34 @@ local function AimAtTarget()
     end
 end
 
+local function Triggerbot()
+    if not TriggerbotEnabled then return end
+
+    local target = GetClosestPlayer()
+    if target and target.Character then
+        local targetParts = target.Character:GetChildren()
+        for _, part in ipairs(targetParts) do
+            if part:IsA("BasePart") then
+                local targetPos = part.Position
+                local targetPos2D, onScreen = Camera:WorldToViewportPoint(targetPos)
+
+                if onScreen then
+                    local mousePos = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+                    local distance = (Vector2.new(targetPos2D.X, targetPos2D.Y) - mousePos).magnitude
+
+                    -- Adjusted FOV check: trigger even if the part touches the FOV
+                    if distance <= TriggerbotFOV + part.Size.Magnitude then
+                        mouse1press()  -- Press the mouse button
+                        mouse1release()  -- Release the mouse button
+                        break  -- Stop checking other parts once we press and release
+                    end
+                end
+            end
+        end
+    end
+end
+
+
 local function CreateESP(player)
     if ESPObjects[player] then return end -- Skip if ESP already exists for this player
 
@@ -215,6 +251,13 @@ local function CreateESP(player)
         NameLabel = nameLabel,
         HealthBar = healthBar
     }
+end
+
+local function UpdateTriggerbotFOV()
+    TriggerbotFOVCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    TriggerbotFOVCircle.Radius = TriggerbotFOV
+    TriggerbotFOVCircle.Color = TriggerbotFOVColor
+    TriggerbotFOVCircle.Visible = TriggerbotFOVVisible
 end
 
 local function ForceHideESP()
@@ -306,7 +349,9 @@ end
 -- Update FOV Circle
 RunService.RenderStepped:Connect(function()
     UpdateFOV()
+    UpdateTriggerbotFOV() -- Update the Triggerbot FOV circle
     AimAtTarget()
+    Triggerbot()
 end)
 
 -- Rayfield GUI
@@ -321,8 +366,9 @@ local Window = Rayfield:CreateWindow({
     },
 })
 
-local Tab = Window:CreateTab("Aimbot Settings", 4483362458)
-local ESPTab = Window:CreateTab("ESP Settings", 4483362458) -- Replace with your desired icon ID
+local Tab = Window:CreateTab("Aimbot", "mouse")
+local TriggerbotTab = Window:CreateTab("Triggerbot", "crosshair") 
+local ESPTab = Window:CreateTab("ESP", "eye")
 
 Tab:CreateToggle({
     Name = "Enable Aimbot",
@@ -342,6 +388,52 @@ Tab:CreateSlider({
     Flag = "SmoothnessSlider",
     Callback = function(Value)
         AimSmoothness = Value
+    end
+})
+
+-- Enable Triggerbot Toggle
+TriggerbotTab:CreateToggle({
+    Name = "Enable Triggerbot",
+    CurrentValue = TriggerbotEnabled,
+    Flag = "TriggerbotToggle",
+    Callback = function(Value)
+        TriggerbotEnabled = Value
+    end
+})
+
+-- Triggerbot FOV Size Slider
+TriggerbotTab:CreateSlider({
+    Name = "Triggerbot FOV Size",
+    Range = {1, 100}, -- Adjust the range as needed
+    Increment = 1,
+    Suffix = "°",
+    CurrentValue = TriggerbotFOV,
+    Flag = "TriggerbotFOVSlider",
+    Callback = function(Value)
+        TriggerbotFOV = Value
+        TriggerbotFOVCircle.Radius = TriggerbotFOV
+    end
+})
+
+-- Triggerbot FOV Visibility Toggle
+TriggerbotTab:CreateToggle({
+    Name = "Show Triggerbot FOV",
+    CurrentValue = TriggerbotFOVVisible,
+    Flag = "TriggerbotFOVVisibleToggle",
+    Callback = function(Value)
+        TriggerbotFOVVisible = Value
+        TriggerbotFOVCircle.Visible = TriggerbotFOVVisible
+    end
+})
+
+-- Triggerbot FOV Color Picker
+TriggerbotTab:CreateColorPicker({
+    Name = "Triggerbot FOV Color",
+    Color = TriggerbotFOVColor,
+    Flag = "TriggerbotFOVColorPicker",
+    Callback = function(Color)
+        TriggerbotFOVColor = Color
+        TriggerbotFOVCircle.Color = TriggerbotFOVColor
     end
 })
 
@@ -515,10 +607,9 @@ Players.PlayerRemoving:Connect(function(player)
 end)
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed then return end -- Ignore if the game processed the input
-
     if input.UserInputType == Enum.UserInputType.MouseButton2 then
         M2Pressed = true
+        print("true")
     end
 end)
 
@@ -526,5 +617,6 @@ end)
 UserInputService.InputEnded:Connect(function(input, gameProcessed)
     if input.UserInputType == Enum.UserInputType.MouseButton2 then
         M2Pressed = false
+        print("false")
     end
 end)
