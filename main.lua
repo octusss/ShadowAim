@@ -25,6 +25,14 @@ local AliveCheckEnabled = true
 
 local AlwaysOn = false
 
+local BulletTrailsEnabled = false
+local BulletTrailColor = Color3.fromRGB(255, 255, 0)
+local BulletTrailDuration = 3 -- seconds
+local BulletTrailThickness = 2
+
+local ShotRecords = {}         -- Format: [player] = shotTime
+local ActiveBulletTrails = {}  -- Each entry: {obj = DrawingLine, time = tick()}
+
 -- Default ESP Settings
 local ESPEnabled = false
 local ShowNames = true
@@ -194,6 +202,55 @@ local function GetClosestPlayer()
     return closestPlayer
 end
 
+local function createBulletTrail(startPos, endPos)
+    local trailPart = Instance.new("Part")
+    trailPart.Size = Vector3.new(0.1, 0.1, (startPos - endPos).Magnitude)  -- Thin trail part
+    trailPart.Position = (startPos + endPos) / 2  -- Position in the middle between start and end
+    trailPart.Anchored = true
+    trailPart.CanCollide = false
+    trailPart.Material = Enum.Material.SmoothPlastic
+    trailPart.Color = BulletTrailColor
+    trailPart.Parent = workspace
+
+    -- Rotate the trail part to align with the direction of the shot
+    local direction = (endPos - startPos).Unit
+    trailPart.CFrame = CFrame.new(trailPart.Position, trailPart.Position + direction)
+
+    -- Tween the trail part to "disappear" after the specified duration
+    local tweenInfo = TweenInfo.new(BulletTrailDuration, Enum.EasingStyle.Linear, Enum.EasingDirection.In)
+    local goal = {Transparency = 1}
+    local tween = game:GetService("TweenService"):Create(trailPart, tweenInfo, goal)
+    tween:Play()
+
+    -- Cleanup after the trail disappears
+    tween.Completed:Connect(function()
+        trailPart:Destroy()
+    end)
+end
+
+local function onCharacterAdded(character, player)
+    local humanoid = character:WaitForChild("Humanoid")
+    local lastHealth = humanoid.Health
+    humanoid.HealthChanged:Connect(function(newHealth)
+        if newHealth < lastHealth then
+            -- Only create a trail if we shot this player recently (within 1 second)
+            local shotTime = ShotRecords[player]
+            if shotTime and (tick() - shotTime <= 1) then
+                local hrp = character:FindFirstChild("HumanoidRootPart")
+                if hrp then
+                    -- Create the bullet trail as a 3D part from player's gun (or muzzle) to the enemy's hit location
+                    local startPos = LocalPlayer.Character.HumanoidRootPart.Position  -- Starting point (you can adjust this to gun's position)
+                    local endPos = hrp.Position
+                    createBulletTrail(startPos, endPos)
+                end
+                -- Clear the shot record for this player to avoid creating multiple trails
+                ShotRecords[player] = nil
+            end
+        end
+        lastHealth = newHealth
+    end)
+end
+
 -- FUNCTION: Aimbot (Locks Aim to Target)
 local function AimAtTarget()
     if not AimbotEnabled then return end
@@ -232,8 +289,7 @@ local function Triggerbot()
 
     local target = GetClosestPlayer()
     if target and target.Character then
-        local targetParts = target.Character:GetChildren()
-        for _, part in ipairs(targetParts) do
+        for _, part in ipairs(target.Character:GetChildren()) do
             if part:IsA("BasePart") then
                 local targetPos = part.Position
                 local targetPos2D, onScreen = Camera:WorldToViewportPoint(targetPos)
@@ -242,17 +298,20 @@ local function Triggerbot()
                     local mousePos = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
                     local distance = (Vector2.new(targetPos2D.X, targetPos2D.Y) - mousePos).magnitude
 
-                    -- Adjusted FOV check: trigger even if the part touches the FOV
                     if distance <= TriggerbotFOV + part.Size.Magnitude then
-                        mouse1press()  -- Press the mouse button
-                        mouse1release()  -- Release the mouse button
-                        break  -- Stop checking other parts once we press and release
+                        mouse1press()
+                        mouse1release()
+
+                        -- Record that we shot this target
+                        ShotRecords[target] = tick()
+                        break -- Only process one target per trigger
                     end
                 end
             end
         end
     end
 end
+
 
 
 local function CreateESP(player)
@@ -431,6 +490,48 @@ Tab:CreateToggle({
     Flag = "AimbotToggle",
     Callback = function(Value)
         AimbotEnabled = Value
+    end
+})
+
+-- Add Rayfield GUI elements to the ESP Tab:
+ESPTab:CreateToggle({
+    Name = "Enable Bullet Trails",
+    CurrentValue = BulletTrailsEnabled,
+    Flag = "BulletTrailsToggle",
+    Callback = function(Value)
+        BulletTrailsEnabled = Value
+    end
+})
+
+ESPTab:CreateColorPicker({
+    Name = "Bullet Trail Color",
+    Color = BulletTrailColor,
+    Flag = "BulletTrailColorPicker",
+    Callback = function(Color)
+        BulletTrailColor = Color
+    end
+})
+
+ESPTab:CreateSlider({
+    Name = "Bullet Trail Duration",
+    Range = {1, 5},
+    Increment = 0.5,
+    Suffix = "s",
+    CurrentValue = BulletTrailDuration,
+    Flag = "BulletTrailDurationSlider",
+    Callback = function(Value)
+        BulletTrailDuration = Value
+    end
+})
+
+ESPTab:CreateSlider({
+    Name = "Bullet Trail Thickness",
+    Range = {1, 5},
+    Increment = 1,
+    CurrentValue = BulletTrailThickness,
+    Flag = "BulletTrailThicknessSlider",
+    Callback = function(Value)
+        BulletTrailThickness = Value
     end
 })
 
@@ -719,5 +820,77 @@ end)
 UserInputService.InputEnded:Connect(function(input, gameProcessed)
     if input.UserInputType == Enum.UserInputType.MouseButton2 then
         M2Pressed = false
+    end
+end)
+
+-- Connect health change listener for players already in-game
+for _, player in pairs(Players:GetPlayers()) do
+    if player ~= LocalPlayer then
+        if player.Character then
+            onCharacterAdded(player.Character, player)
+        end
+        -- Also listen for character respawns:
+        player.CharacterAdded:Connect(function(character)
+            onCharacterAdded(character, player)
+        end)
+    end
+end
+
+-- Listen for new players joining:
+Players.PlayerAdded:Connect(function(player)
+    if player ~= LocalPlayer then
+        player.CharacterAdded:Connect(function(character)
+            onCharacterAdded(character, player)
+        end)
+    end
+end)
+
+-- Update active bullet trails in your RenderStepped loop
+RunService.RenderStepped:Connect(function()
+    -- Update other render functions…
+    for i = #ActiveBulletTrails, 1, -1 do
+        local trailData = ActiveBulletTrails[i]
+        if tick() - trailData.time > BulletTrailDuration then
+            trailData.obj:Remove()
+            table.remove(ActiveBulletTrails, i)
+        end
+    end
+end)
+
+-- Normal Shooting: record a shot when the left mouse button is pressed
+UserInputService.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        local target = GetClosestPlayer()  -- or use a raycast from the camera if you need more precision
+        if target then
+            -- Record the shot time for this target, just as in your triggerbot logic
+            ShotRecords[target] = tick()
+        end
+    end
+end)
+
+local IsFiring = false
+
+-- Detect when the player starts firing
+UserInputService.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then -- RMB for automatic weapons
+        IsFiring = true
+    end
+end)
+
+-- Detect when the player stops firing
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then
+        IsFiring = false
+    end
+end)
+
+RunService.RenderStepped:Connect(function()
+    if IsFiring and (tick() - LastShotTime >= ShotCooldown) then
+        local target = GetClosestPlayer()
+        if target then
+            -- Record the shot time for this target
+            ShotRecords[target] = tick()
+            LastShotTime = tick()
+        end
     end
 end)
