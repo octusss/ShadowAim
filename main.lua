@@ -7,10 +7,11 @@ local RunService = game:GetService("RunService")
 local Mouse = LocalPlayer:GetMouse()
 local UserInputService = game:GetService("UserInputService")
 local Drawing = Drawing or require("Drawing")
-local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
 
 -- Default Settings
 local AimbotEnabled = true
+local Is360ModeEnabled = false
 local AimSmoothness = 0.2
 local AimFOV = 100
 local WallCheckEnabled = true
@@ -33,6 +34,10 @@ local BulletTrailThickness = 2
 local ShotRecords = {}         -- Format: [player] = shotTime
 local ActiveBulletTrails = {}  -- Each entry: {obj = DrawingLine, time = tick()}
 
+local LastShotTime = 0
+local ShotCooldown = 0.01
+
+
 -- Default ESP Settings
 local ESPEnabled = false
 local ShowNames = true
@@ -43,6 +48,11 @@ local ESPVisibleColor = Color3.fromRGB(0, 0, 255) -- Default color for visible e
 local ESPVisibleToggle = true -- Enable/disable visible ESP color
 
 local ESPObjects = {}
+
+local SilentAimSettings = {
+    HitChance = 0.9 -- Chance to apply silent aim (0 to 1)
+}
+local OriginalRaycast = workspace.Raycast -- Store original raycast function
 
 -- FOV Circle
 local FOVCircle = Drawing.new("Circle")
@@ -81,11 +91,11 @@ end
 
 local AimingMethods = {
     "UserInputService",
-    "CFrame"
+    "CFrame",
+    "Silent"
 }
 
 local SelectedAimingMethod = "UserInputService" -- Default method
-
 
 -- FUNCTION: Check if Player is Alive
 local function IsAlive(player)
@@ -101,7 +111,6 @@ local function IsAlive(player)
 
     return humanoid.Health > 0
 end
-
 
 local function IsOnSameTeam(targetPlayer)
     if not TeamCheck then
@@ -126,10 +135,10 @@ local function UpdateFOV()
     FOVCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
     FOVCircle.Radius = AimFOV
     FOVCircle.Color = FOVColor
-    FOVCircle.Visible = VisibleFOV
+    FOVCircle.Visible = VisibleFOV and not Is360ModeEnabled
 end
 
--- FUNCTION: Check if Target is Visible (Lightweight Wall Check)
+
 local function IsVisible(targetPart)
     if not WallCheckEnabled then return true end
     
@@ -141,7 +150,7 @@ local function IsVisible(targetPart)
     return not hitPart or hitPart:IsDescendantOf(targetPart.Parent)
 end
 
--- FUNCTION: Predict Target Position
+
 local function PredictPosition(target)
     if not PredictionEnabled then
         return nil
@@ -157,51 +166,52 @@ local function PredictPosition(target)
     return predictedPosition
 end
 
--- FUNCTION: Find Closest Visible Target
 local function GetClosestPlayer()
     local closestPlayer = nil
-    local shortestDistance = AimFOV
+    local shortestDistance = Is360ModeEnabled and math.huge or AimFOV
 
+    -- Iterate through all players
     for _, player in pairs(Players:GetPlayers()) do
         if player ~= LocalPlayer and player.Character and IsAlive(player) then
+            -- Skip teammates if team check is enabled
             if TeamCheck and IsOnSameTeam(player) then
-                -- Skip teammates if TeamCheck is enabled
+                -- Do nothing
             else
-                local targetPart
-                if HeadshotOnly then
-                    -- Only target the head if HeadshotOnly is enabled
-                    targetPart = player.Character:FindFirstChild("Head")
-                else
-                    -- Default to HumanoidRootPart if HeadshotOnly is disabled
-                    targetPart = player.Character:FindFirstChild("HumanoidRootPart")
-                end
-
+                -- Target head or root part based on settings
+                local targetPart = player.Character:FindFirstChild(HeadshotOnly and "Head" or "HumanoidRootPart")
                 if targetPart then
-                    local targetPos, onScreen
-                    if PredictionEnabled then
-                        local predictedPos = PredictPosition(player)
-                        if predictedPos then
-                            targetPos, onScreen = Camera:WorldToViewportPoint(predictedPos)
-                        end
-                    else
-                        targetPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
-                    end
-
-                    if onScreen and targetPos then
-                        local distance = (Vector2.new(targetPos.X, targetPos.Y) - Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)).magnitude
+                    if Is360ModeEnabled then
+                        -- 360-degree mode: use 3D distance
+                        local distance = (targetPart.Position - LocalPlayer.Character.HumanoidRootPart.Position).Magnitude
                         if distance < shortestDistance and IsVisible(targetPart) then
                             closestPlayer = player
                             shortestDistance = distance
+                        end
+                    else
+                        -- Normal mode: use screen-based FOV
+                        local targetPos, onScreen
+                        if PredictionEnabled then
+                            local predictedPos = PredictPosition(player)
+                            if predictedPos then
+                                targetPos, onScreen = Camera:WorldToViewportPoint(predictedPos)
+                            end
+                        else
+                            targetPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+                        end
+                        if onScreen and targetPos then
+                            local screenDistance = (Vector2.new(targetPos.X, targetPos.Y) - Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)).Magnitude
+                            if screenDistance < shortestDistance and IsVisible(targetPart) then
+                                closestPlayer = player
+                                shortestDistance = screenDistance
+                            end
                         end
                     end
                 end
             end
         end
     end
-
     return closestPlayer
 end
-
 local function createBulletTrail(startPos, endPos)
     local trailPart = Instance.new("Part")
     trailPart.Size = Vector3.new(0.1, 0.1, (startPos - endPos).Magnitude)  -- Thin trail part
@@ -251,7 +261,29 @@ local function onCharacterAdded(character, player)
     end)
 end
 
--- FUNCTION: Aimbot (Locks Aim to Target)
+
+local function hookRaycast(targetPart)
+    local oldRaycast = workspace.Raycast
+    workspace.Raycast = function(origin, direction, params)
+        if AimbotEnabled and SelectedAimingMethod == "Silent" and targetPart and math.random() < SilentAimSettings.HitChance then
+            -- Redirect raycast to target
+            local newDirection = (targetPart.Position - origin).Unit * direction.Magnitude
+            local raycastParams = params or RaycastParams.new()
+            raycastParams.FilterDescendantsInstances = {LocalPlayer.Character}
+            raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
+            local result = OriginalRaycast(workspace, origin, newDirection, raycastParams)
+            
+            -- If hit, return manipulated result
+            if result and result.Instance:IsDescendantOf(targetPart.Parent) then
+                return result
+            end
+        end
+        -- Fallback to original raycast
+        return oldRaycast(workspace, origin, direction, params)
+    end
+end
+
+
 local function AimAtTarget()
     if not AimbotEnabled then return end
     if not AlwaysOn and not M2Pressed then return end
@@ -278,6 +310,9 @@ local function AimAtTarget()
                     AimWithUserInputService(Vector2.new(targetPos2D.X, targetPos2D.Y), mousePos)
                 elseif SelectedAimingMethod == "CFrame" then
                     AimWithCFrame(targetPos)
+                elseif SelectedAimingMethod == "Silent" then
+                    if WallCheckEnabled and not IsVisible(targetPart) then return end
+                    hookRaycast(targetPart) -- Hook raycast for silent aim
                 end
             end
         end
@@ -311,8 +346,6 @@ local function Triggerbot()
         end
     end
 end
-
-
 
 local function CreateESP(player)
     if ESPObjects[player] then return end -- Skip if ESP already exists for this player
@@ -361,6 +394,7 @@ local function ForceHideESP()
         espData.HealthBar.Visible = false
     end
 end
+
 
 local function UpdateESP(player)
     local espData = ESPObjects[player]
@@ -459,7 +493,6 @@ local function RemoveESP(player)
     ESPObjects[player] = nil
 end
 
-
 -- Update FOV Circle
 RunService.RenderStepped:Connect(function()
     UpdateFOV()
@@ -483,6 +516,7 @@ local Window = Rayfield:CreateWindow({
 local Tab = Window:CreateTab("Aimbot", "mouse")
 local TriggerbotTab = Window:CreateTab("Triggerbot", "crosshair") 
 local ESPTab = Window:CreateTab("ESP", "eye")
+
 
 Tab:CreateToggle({
     Name = "Enable Aimbot",
@@ -560,6 +594,19 @@ Tab:CreateSlider({
     Flag = "SmoothnessSlider",
     Callback = function(Value)
         AimSmoothness = Value
+    end
+})
+
+
+Tab:CreateSlider({
+    Name = "Silent Aim Hit Chance",
+    Range = {0, 1},
+    Increment = 0.1,
+    Suffix = "%",
+    CurrentValue = SilentAimSettings.HitChance,
+    Flag = "SilentHitChanceSlider",
+    Callback = function(Value)
+        SilentAimSettings.HitChance = Value
     end
 })
 
@@ -643,7 +690,6 @@ Tab:CreateToggle({
     end
 })
 
-
 -- Add Alive Check Toggle to Rayfield GUI
 Tab:CreateToggle({
     Name = "Alive Check",
@@ -682,6 +728,15 @@ Tab:CreateToggle({
 })
 
 Tab:CreateToggle({
+    Name = "360° Mode",
+    CurrentValue = Is360ModeEnabled,
+    Flag = "360ModeToggle",
+    Callback = function(Value)
+        Is360ModeEnabled = Value
+    end
+})
+
+Tab:CreateToggle({
     Name = "Always On",
     CurrentValue = AlwaysOn,
     Flag = "AlwaysOnToggle",
@@ -710,7 +765,8 @@ Tab:CreateColorPicker({
     end
 })
 
--- ESP Toggles
+
+-- ESP Toggle
 ESPTab:CreateToggle({
     Name = "Enable ESP",
     CurrentValue = ESPEnabled,
@@ -722,7 +778,6 @@ ESPTab:CreateToggle({
         end
     end
 })
-
 
 ESPTab:CreateToggle({
     Name = "Show Names",
@@ -887,7 +942,7 @@ end)
 RunService.RenderStepped:Connect(function()
     if IsFiring and (tick() - LastShotTime >= ShotCooldown) then
         local target = GetClosestPlayer()
-        if target then
+        if target then -- Only proceed if a valid target exists
             -- Record the shot time for this target
             ShotRecords[target] = tick()
             LastShotTime = tick()
